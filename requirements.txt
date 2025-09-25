@@ -1,0 +1,5 @@
+streamlit
+pandas
+numpy
+scikit-learn
+sentence-transformers>=2.2.2 ; platform_system != "Darwin" or python_version >= "3.9"

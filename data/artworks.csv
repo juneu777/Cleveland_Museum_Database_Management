@@ -1,0 +1,11 @@
+id,title,artist,year,medium,department,description,tags
+1,Portrait of a Musician,Johannes Vermeer,1665,Oil on canvas,European Painting,"A serene portrait of a woman playing a lute, bathed in soft light.",lute;baroque;portrait
+2,Bronze Horse,Unknown,200,Cast bronze,Ancient Art,"A compact bronze sculpture depicting a horse in motion.",bronze;animal;sculpture
+3,The Wave,Artist Hokusai,1831,Woodblock print,Asian Art,"A dramatic Japanese ukiyo-e print of a towering wave and boats.",japanese;ukiyoe;print
+4,Still Life with Apples,Paul Cézanne,1895,Oil on canvas,European Painting,"Post-impressionist still life exploring color and form with apples and a jug.",still life;post-impressionism;apples
+5,Mask of the Dan People,Unknown,1890,Carved wood,African Art,"Traditional ceremonial mask with elongated features and dark patina.",africa;mask;wood
+6,Abstract Composition,Jackson Pollock,1950,Enamel on canvas,Modern Art,"Action painting with energetic drips and splatters forming a dense web.",abstract;drip;modern
+7,Madonna and Child,Giotto di Bondone,1310,Tempera on panel,Medieval Art,"Iconic devotional painting with gold ground and stylized figures.",icon;gold;medieval
+8,Seated Buddha,Unknown,1200,Stone,Asian Art,"A contemplative stone Buddha statue in lotus position with serene expression.",buddha;stone;statue
+9,The Iron Bridge,J. M. W. Turner,1819,Watercolor,European Painting,"Expressive landscape with an iron bridge, mist, and glowing sky.",landscape;bridge;watercolor
+10,Guardian Lion,Unknown,1400,Granite,Asian Art,"Temple guardian lion sculpture symbolizing protection and power.",lion;guardian;temple
