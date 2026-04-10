@@ -5,12 +5,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# -----------------------------
-# Configuration
-# -----------------------------
 DATA_PATH = os.environ.get("CMA_DATA_PATH", "data/data.csv")
 DEFAULT_TOPK = 10
-HYBRID_DEFAULT_WEIGHT = 0.6  # weight for semantic SBERT; TF-IDF weight = 1 - this
+HYBRID_DEFAULT_WEIGHT = 0.6  
 RANDOM_SEED = 42
 score_label = "Relevance (%)"
 
@@ -22,7 +19,6 @@ np.random.seed(RANDOM_SEED)
 
 @st.cache_data
 def load_data(path=DATA_PATH, max_rows=None):
-    # Columns your app actually uses
     USECOLS = [
         "id", "accession_number", "title", "creators", "creation_date",
         "creation_date_earliest", "technique", "department",
@@ -34,16 +30,14 @@ def load_data(path=DATA_PATH, max_rows=None):
     probe = pd.read_csv(path, nrows=0, low_memory=False)
     usecols = [c for c in USECOLS if c in probe.columns]
 
-    # FAST read: select columns; optionally cap rows for development
     df = pd.read_csv(
         path,
         usecols=usecols,
-        nrows=max_rows,                 # set via env or None for all
-        low_memory=False,               # silence DtypeWarning
-        engine="pyarrow" if "pyarrow" in pd.__dict__.get("options", {}).__class__.__module__ else None,  # use pyarrow if available
+        nrows=max_rows,               
+        low_memory=False,             
+        engine="pyarrow" if "pyarrow" in pd.__dict__.get("options", {}).__class__.__module__ else None, 
     )
 
-    # ---------- CMA → your schema mapping ----------
     def _artist_from_creators(val):
         if isinstance(val, list):
             return ", ".join([str(getattr(x, "get", lambda k, d=None: None)("description", "") or x).strip() for x in val if str(x).strip()])
@@ -88,7 +82,6 @@ def load_data(path=DATA_PATH, max_rows=None):
                 seen.add(t); tags.append(t)
         return ";".join(tags)
 
-    # Build expected columns
     if "artist" not in df.columns:
         df["artist"] = df.get("creators", "").apply(_artist_from_creators)
     if "year" not in df.columns:
@@ -102,14 +95,12 @@ def load_data(path=DATA_PATH, max_rows=None):
     if "image_web" not in df.columns:
         df["image_web"] = ""
 
-    # Normalize core fields
     for c in ["title", "artist", "medium", "department", "description", "tags", "image_web"]:
         if c in df.columns:
             df[c] = df[c].fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
 
     df["year"] = pd.to_numeric(df["year"], errors="coerce").fillna(0).astype(int)
 
-    # Ensure id present (prefer accession_number if needed)
     if "id" not in df.columns:
         if "accession_number" in df.columns:
             df["id"] = df["accession_number"]
@@ -121,7 +112,6 @@ def load_data(path=DATA_PATH, max_rows=None):
 
 MAX_ROWS = int(os.environ.get("CMA_MAX_ROWS", "0")) or None
 df = load_data(DATA_PATH, max_rows=MAX_ROWS)
-########## Embedding & Similarity ##########
 def _try_sentence_transformers():
     try:
         from sentence_transformers import SentenceTransformer
@@ -142,18 +132,35 @@ embedder_kind, embedder_model, embedder_error = get_embedder()
 
 @st.cache_data(show_spinner=False)
 def build_index_text_corpus(_df):
-    cols = ["title","artist","year","medium","department","description","tags"]
-    present = [c for c in cols if c in _df.columns]
-    combined = _df[present].astype(str).agg(" | ".join, axis=1)
+    combined = (
+        _df["title"].fillna("") + " " +
+        _df["title"].fillna("") + " " +  
+        _df["description"].fillna("") + " " +
+        _df["tags"].fillna("") + " " +
+        _df["medium"].fillna("")
+    )
     return combined.tolist()
 
 corpus = build_index_text_corpus(df)
 
 @st.cache_resource(show_spinner=False)
 def build_sbert_embeddings(_corpus):
-    embs = np.array(embedder_model.encode(_corpus, show_progress_bar=False))
-    norms = np.linalg.norm(embs, axis=1, keepdims=True) + 1e-12
-    return embs / norms
+    embs = np.array(
+        embedder_model.encode(_corpus, show_progress_bar=False),
+        dtype=np.float32
+    )
+
+    embs = np.nan_to_num(embs, nan=0.0, posinf=0.0, neginf=0.0)
+
+    norms = np.linalg.norm(embs, axis=1, keepdims=True)
+    norms = np.where((~np.isfinite(norms)) | (norms < 1e-12), 1.0, norms)
+
+    embs = embs / norms
+
+    if not np.isfinite(embs).all():
+        raise ValueError("sbert_embeddings still contains NaN or inf after normalization")
+
+    return embs
 
 @st.cache_resource(show_spinner=False)
 def build_tfidf_matrix(_corpus):
@@ -180,8 +187,26 @@ if embedder_kind == "sbert":
 tfidf_vec, tfidf_X = build_tfidf_matrix(corpus)
 
 def encode_query_sbert(q):
-    v = np.array(embedder_model.encode([q], show_progress_bar=False))[0]
-    v = v / (np.linalg.norm(v) + 1e-12)
+    q = str(q).strip()
+    if not q:
+        return np.zeros(sbert_embeddings.shape[1], dtype=np.float32)
+
+    v = embedder_model.encode(
+        [q],
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=False
+    )[0].astype(np.float32)
+
+    v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+
+    norm = np.linalg.norm(v)
+    if not np.isfinite(norm) or norm < 1e-12:
+        return np.zeros_like(v)
+
+    v = v / norm
+    v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+
     return v
 
 def encode_query_tfidf(q):
@@ -216,8 +241,6 @@ def safe_topk_union(k, sbert_scores=None, tfidf_scores=None, weight=HYBRID_DEFAU
         return order, tfidf_scores[order]
 
 
-
-########## Sidebar Controls ##########
 with st.sidebar:
     st.header("🔎 Search & Filters")
     query = st.text_input("Semantic search", placeholder="e.g., sculpture of an animal in bronze").strip()
@@ -250,8 +273,6 @@ with st.sidebar:
     has_image_only = st.checkbox("Has image only", value=False, disabled=("image_web" not in df.columns))
     on_view_only = st.checkbox("On view (in galleries) only", value=False, disabled=("current_location" not in df.columns))
 
-
-########## Filtering ##########
 def apply_filters(_df):
     mask = (_df["year"] >= year_range[0]) & (_df["year"] <= year_range[1])
     if artist_sel != "(any)":
@@ -261,13 +282,11 @@ def apply_filters(_df):
     if dept_sel != "(any)":
         mask &= (_df["department"] == dept_sel)
 
-    # CMA-specific filters (guarded)
     if "share_license_status" in _df.columns and cc0_only:
         mask &= (_df["share_license_status"].astype(str).str.upper() == "CC0")
     if "image_web" in _df.columns and has_image_only:
         mask &= _df["image_web"].astype(str).str.strip().ne("")
     if "current_location" in _df.columns and on_view_only:
-        # CMA "on view" usually has a gallery like "Gallery 101" (non-empty)
         mask &= _df["current_location"].astype(str).str.strip().ne("")
 
     return _df[mask]
@@ -276,17 +295,87 @@ def apply_filters(_df):
 filtered_df = apply_filters(df)
 filtered_idx = filtered_df.index.to_numpy()
 
-########## Search ##########
-st.title("🎨 Cleveland Museum of Art — AI-Assisted Analyzer (Robust)")
+def rerank_and_dedup_results(results_df, scores):
+    if results_df.empty:
+        return results_df, scores
+
+    tmp = results_df.copy()
+    tmp["_score"] = list(scores) if scores is not None else [0.0] * len(tmp)
+
+    generic_titles = {
+        "untitled",
+        "no title",
+        "study",
+        "fragment"
+    }
+
+    title_lower = tmp["title"].fillna("").str.strip().str.lower()
+    tmp.loc[title_lower.isin(generic_titles), "_score"] -= 15.0
+
+    tmp["_dedup_key"] = (
+        tmp["title"].fillna("").str.strip().str.lower() + " | " +
+        tmp["artist"].fillna("").str.strip().str.lower()
+    )
+
+    tmp = tmp.sort_values("_score", ascending=False)
+    tmp = tmp.drop_duplicates(subset="_dedup_key", keep="first")
+
+    tmp = tmp.sort_values("_score", ascending=False).reset_index(drop=True)
+
+    new_scores = tmp["_score"].tolist()
+    tmp = tmp.drop(columns=["_score", "_dedup_key"])
+
+    return tmp, new_scores
+
+
+def apply_query_term_boost(results_df, scores, query):
+    if results_df.empty or not query.strip():
+        return results_df, scores
+
+    tmp = results_df.copy()
+    tmp["_score"] = list(scores) if scores is not None else [0.0] * len(tmp)
+
+    q_terms = query.lower().split()
+
+    searchable = (
+        tmp["title"].fillna("").str.lower() + " " +
+        tmp["description"].fillna("").str.lower() + " " +
+        tmp["tags"].fillna("").str.lower() + " " +
+        tmp["medium"].fillna("").str.lower()
+    )
+
+    for term in q_terms:
+        tmp.loc[searchable.str.contains(term, na=False), "_score"] += 0.05
+
+    tmp = tmp.sort_values("_score", ascending=False).reset_index(drop=True)
+    new_scores = tmp["_score"].tolist()
+    tmp = tmp.drop(columns=["_score"])
+
+    return tmp, new_scores
+
+st.title("Semantic Search Engine for the Cleveland Museum of Art Collection")
 st.write("Hybrid semantic + keyword retrieval, curator notes, CSV export, and basic analytics with graceful fallbacks.")
 
 results_df = filtered_df.copy()
 scores = None
 
-
 def fullscore_sbert(q):
     qv = encode_query_sbert(q)
-    return sbert_embeddings @ qv
+
+    if not np.isfinite(qv).all():
+        print("BAD QUERY VECTOR:", qv)
+        return np.zeros(len(sbert_embeddings), dtype=np.float32)
+
+    scores = sbert_embeddings @ qv
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if not np.isfinite(scores).all():
+        print("BAD SCORES AFTER MATMUL")
+        return np.zeros(len(sbert_embeddings), dtype=np.float32)
+
+    return scores
+
+
 
 def fullscore_tfidf(q):
     qv = encode_query_tfidf(q)
@@ -298,40 +387,93 @@ if query:
     except Exception:
         sbert_full = None
     tfidf_full = fullscore_tfidf(query)
-    s_full_01 = ((sbert_full + 1.0) / 2.0) if sbert_full is not None else None
-    t_full_01 = tfidf_full if tfidf_full is not None else None
+    s_full_01 = norm01((sbert_full + 1.0) / 2.0) if sbert_full is not None else None
+    t_full_01 = norm01(tfidf_full)
 
     sbert_sub = s_full_01[filtered_idx] if s_full_01 is not None else None
     tfidf_sub = t_full_01[filtered_idx] if t_full_01 is not None else None
 
+    candidate_k = min(len(filtered_idx), max(int(k) * 5, 50))
+
     if use_hybrid and (sbert_sub is not None):
-        order_local, sc_local_01 = safe_topk_union(int(k), sbert_sub, tfidf_sub, hybrid_w)
-        sc_local = sc_local_01 * 100.0
+        order_local, sc_local_01 = safe_topk_union(candidate_k, sbert_sub, tfidf_sub, hybrid_w)
+        sc_local = sc_local_01 
         score_label = f"Relevance (Hybrid, {int(hybrid_w*100)}% semantic)"
     elif sbert_sub is not None:
-        order_local = np.argsort(-sbert_sub)[:int(k)]
-        sc_local = sbert_sub[order_local] * 100.0   
+        order_local = np.argsort(-sbert_sub)[:candidate_k]
+        sc_local = sbert_sub[order_local]
         score_label = "Relevance (SBERT %)"
     else:
-        order_local = np.argsort(-tfidf_sub)[:int(k)]
-        sc_local = tfidf_sub[order_local] * 100.0   
+        order_local = np.argsort(-tfidf_sub)[:candidate_k]
+        sc_local = tfidf_sub[order_local] 
         score_label = "Relevance (TF-IDF %)"
 
     chosen_indices = filtered_idx[order_local] if len(filtered_idx) > 0 else np.array([], dtype=int)
     results_df = df.loc[chosen_indices].copy()
     scores = sc_local.tolist()
 
+    results_df["_score"] = scores
+
+    stop_terms = {
+    "art", "artwork", "work", "piece", "image",
+    "drawing", "drawings", "painting", "paintings"
+    }
+
+    q_terms = [t for t in query.lower().split() if t not in stop_terms]
+
+    if not q_terms:
+        q_terms = query.lower().split()
+
+    title_text = results_df["title"].fillna("").str.lower()
+    tags_text = results_df["tags"].fillna("").str.lower()
+    desc_text = results_df["description"].fillna("").str.lower()
+    medium_text = results_df["medium"].fillna("").str.lower()
+
+    for term in q_terms:
+        results_df.loc[title_text.str.contains(term, na=False, regex=False), "_score"] += 0.12
+        results_df.loc[tags_text.str.contains(term, na=False, regex=False), "_score"] += 0.08
+        results_df.loc[medium_text.str.contains(term, na=False, regex=False), "_score"] += 0.02
+        results_df.loc[desc_text.str.contains(term, na=False, regex=False), "_score"] += 0.02
+
+    results_df["_score"] = results_df["_score"].clip(0.0, 1.0)
+
+    primary_terms = [t for t in query.lower().split() if t not in {"drawing", "drawings", "painting", "paintings", "art", "artwork"}]
+
+    if primary_terms:
+        subject_text = (
+            results_df["title"].fillna("").str.lower() + " " +
+            results_df["tags"].fillna("").str.lower()
+        )
+
+        for term in primary_terms:
+            results_df.loc[subject_text.str.contains(term, na=False), "_score"] += 0.15
     
+    
+    generic_titles = {"untitled", "no title", "study", "fragment"}
+    title_lower = results_df["title"].fillna("").str.strip().str.lower()
+    results_df.loc[title_lower.isin(generic_titles), "_score"] -= 0.15
+    results_df["_score"] = results_df["_score"].clip(0.0, 1.0)
+
+    results_df["_dedup_key"] = (
+        results_df["title"].fillna("").str.strip().str.lower() + " | " +
+        results_df["artist"].fillna("").str.strip().str.lower()
+    )
+
+    results_df = results_df.sort_values("_score", ascending=False)
+    results_df = results_df.drop_duplicates(subset="_dedup_key", keep="first")
+
+    results_df = results_df[
+        ~results_df["title"].fillna("").str.strip().str.lower().str.startswith("untitled")
+    ]
+
+    results_df = results_df.sort_values("_score", ascending=False).head(int(k)).copy()
+
+    scores = results_df["_score"].tolist()
+    results_df = results_df.drop(columns=["_score", "_dedup_key"])
+
     q_norm = query.strip().lower()
-
-
     if results_df.shape[0] > 0:
-        if not isinstance(scores, list) or len(scores) != len(results_df):
-           
-            scores = list(scores) if scores is not None else [0.0] * len(results_df)
-
         title_matches = results_df["title"].fillna("").str.strip().str.lower() == q_norm
-
         if title_matches.any():
             match_idx = np.where(title_matches.values)[0].tolist()
             non_idx = np.where(~title_matches.values)[0].tolist()
@@ -341,11 +483,8 @@ if query:
                 ignore_index=True
             )
 
-            new_scores = [100.0] * len(match_idx) + [scores[i] for i in non_idx]
-            scores = new_scores
+            scores = [100.0] * len(match_idx) + [scores[i] for i in non_idx]
 
-
-########## Results Table ##########
 def render_row(row, score=None):
     left, right = st.columns([2, 1])
 
@@ -353,29 +492,25 @@ def render_row(row, score=None):
         st.subheader(f"{row.title} ({int(row.year)})")
         st.write(f"**Artist:** {row.artist}  |  **Medium:** {row.medium}  |  **Department:** {row.department}")
 
-        # Primary description
         st.write(row.description or "—")
 
-        # Optional creditline (if present in CMA data)
         if "creditline" in row.index and str(row.creditline).strip():
             st.caption(f"Creditline: {row.creditline}")
 
-        # Tags
         if isinstance(row.tags, str) and row.tags.strip():
             st.caption("Tags: " + ", ".join(t.strip() for t in str(row.tags).split(";") if t.strip()))
 
-        # Link back to CMA canonical page
         if "url" in row.index and str(row.url).strip():
             st.markdown(f"[View on CMA]({row.url})")
 
     with right:
-        # Thumbnail if available
         img = str(getattr(row, "image_web", "") or "").strip()
         if img:
             st.image(img, use_container_width=True)
 
         if score is not None and np.isfinite(score):
-            st.metric(score_label, f"{float(score):.1f}%")
+            score_percent = float(score) * 100
+            st.metric(score_label, f"{score_percent:.1f}%")
 
         st.caption(f"ID: {row.id}")
 
@@ -389,15 +524,13 @@ else:
         render_row(r, sc)
         st.divider()
 
-########## Curator Notes (by TITLE) ##########
 st.write("### Curator Notes")
 if "notes" not in st.session_state:
-    st.session_state["notes"] = {}  # title -> note text
+    st.session_state["notes"] = {} 
 
 title_options = results_df["title"].tolist() if not results_df.empty else df["title"].tolist()
 selected_title = st.selectbox("Select artwork by title", title_options, key="note_title_select")
 
-# Pre-fill with any existing note for this title
 existing = st.session_state["notes"].get(selected_title, "")
 note_text = st.text_area("Notes", value=existing, key="note_text_area", placeholder="Ex: Consider for Spring exhibition on maritime themes.")
 
@@ -412,7 +545,6 @@ with cols_btn[1]:
         st.session_state["notes"].pop(selected_title, None)
         st.info(f"Cleared note for “{selected_title}”.")
 
-# Download single note as TXT
 def _slugify(s):
     return "".join(c if c.isalnum() or c in ("-","_") else "_" for c in s)[:80]
 
@@ -428,7 +560,6 @@ st.download_button(
     key="dl_single_note"
 )
 
-# Download all notes as TXT
 if st.session_state["notes"]:
     all_txt_parts = []
     for t, n in st.session_state["notes"].items():
@@ -444,7 +575,6 @@ st.download_button(
     key="dl_all_notes"
 )
 
-########## Export (CSV) ##########
 st.write("### Export")
 export_cols = ["id", "title", "artist", "year", "medium", "department", "description", "tags"]
 df_with_notes = df.copy()
@@ -462,7 +592,6 @@ out_df.to_csv(csv_buf, index=False, encoding="utf-8")
 st.download_button("Download CSV", csv_buf.getvalue(), file_name="museum_export.csv", mime="text/csv")
 
 
-# ---- Helpers to decide which rows to analyze ----
 def has_active_filters(yr_min, yr_max, year_range, artist_sel, medium_sel, dept_sel):
     year_filtered = not (year_range[0] == yr_min and year_range[1] == yr_max)
     return (
@@ -473,10 +602,8 @@ def has_active_filters(yr_min, yr_max, year_range, artist_sel, medium_sel, dept_
     )
 
 def current_analysis_df(df_all, results_df, query, yr_min, yr_max, year_range, artist_sel, medium_sel, dept_sel):
-    # If a search is active OR any filter is active → analyze what's shown (results_df)
     if (query and query.strip()) or has_active_filters(yr_min, yr_max, year_range, artist_sel, medium_sel, dept_sel):
         return results_df
-    # Otherwise analyze the entire dataset
     return df_all
 
 st.write("### Quick Analytics")
