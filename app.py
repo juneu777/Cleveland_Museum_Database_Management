@@ -9,6 +9,9 @@ DATA_PATH = os.environ.get("CMA_DATA_PATH", "data/data.csv")
 DEFAULT_TOPK = 10
 HYBRID_DEFAULT_WEIGHT = 0.6  
 RANDOM_SEED = 42
+EMBED_MODEL_NAME = os.environ.get("CMA_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
+RERANKER_MODEL_NAME = os.environ.get("CMA_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANK_TOPN = int(os.environ.get("CMA_RERANK_TOPN", "50"))
 score_label = "Relevance (%)"
 
 
@@ -115,7 +118,17 @@ df = load_data(DATA_PATH, max_rows=MAX_ROWS)
 def _try_sentence_transformers():
     try:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer("all-MiniLM-L6-v2")
+        model = SentenceTransformer(EMBED_MODEL_NAME)
+        return model, None
+    except Exception as e:
+        return None, str(e)
+
+
+@st.cache_resource
+def get_reranker():
+    try:
+        from sentence_transformers import CrossEncoder
+        model = CrossEncoder(RERANKER_MODEL_NAME)
         return model, None
     except Exception as e:
         return None, str(e)
@@ -129,15 +142,18 @@ def get_embedder():
         return ("tfidf", None, err or "SentenceTransformers unavailable")
 
 embedder_kind, embedder_model, embedder_error = get_embedder()
+reranker_model, reranker_error = get_reranker()
 
 @st.cache_data(show_spinner=False)
 def build_index_text_corpus(_df):
     combined = (
-        _df["title"].fillna("") + " " +
-        _df["title"].fillna("") + " " +  
-        _df["description"].fillna("") + " " +
-        _df["tags"].fillna("") + " " +
-        _df["medium"].fillna("")
+        "Title: " + _df["title"].fillna("") + ". " +
+        "Artist: " + _df["artist"].fillna("") + ". " +
+        "Date: " + _df["year"].astype(str) + ". " +
+        "Medium: " + _df["medium"].fillna("") + ". " +
+        "Department: " + _df["department"].fillna("") + ". " +
+        "Culture and tags: " + _df["tags"].fillna("") + ". " +
+        "Description: " + _df["description"].fillna("")
     )
     return combined.tolist()
 
@@ -263,9 +279,17 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption(f"Embedder mode: **{'SentenceTransformers' if (embedder_kind=='sbert' and sbert_embeddings is not None) else 'TF-IDF only'}**")
+    if embedder_kind == "sbert" and sbert_embeddings is not None:
+        st.caption(f"Embedding model: `{EMBED_MODEL_NAME}`")
+    st.caption(f"Reranker: **{'Enabled' if reranker_model is not None else 'Unavailable'}**")
+    if reranker_model is not None:
+        st.caption(f"Reranker model: `{RERANKER_MODEL_NAME}`")
     if embedder_error and (embedder_kind != 'sbert' or sbert_embeddings is None):
         with st.expander("Why semantic mode is disabled"):
             st.code(str(embedder_error))
+    if reranker_error and reranker_model is None:
+        with st.expander("Why reranking is disabled"):
+            st.code(str(reranker_error))
     st.caption(f"Records indexed: **{len(df)}**")
 
     st.markdown("---")
@@ -381,6 +405,35 @@ def fullscore_tfidf(q):
     qv = encode_query_tfidf(q)
     return (tfidf_X @ qv.T).toarray().ravel()
 
+
+def rerank_candidates(query_text, candidate_indices, candidate_scores):
+    if reranker_model is None or len(candidate_indices) <= 1 or not str(query_text).strip():
+        return candidate_indices, candidate_scores
+
+    limit = min(len(candidate_indices), max(1, RERANK_TOPN))
+    doc_texts = [corpus[idx] for idx in candidate_indices[:limit]]
+    pairs = [(query_text, doc_text) for doc_text in doc_texts]
+
+    try:
+        rerank_scores = np.asarray(reranker_model.predict(pairs), dtype=np.float32)
+    except Exception:
+        return candidate_indices, candidate_scores
+
+    rerank_scores = np.nan_to_num(rerank_scores, nan=0.0, posinf=0.0, neginf=0.0)
+    rerank_scores = norm01(rerank_scores)
+    base_scores = np.asarray(candidate_scores[:limit], dtype=np.float32)
+    fused_scores = (0.75 * rerank_scores) + (0.25 * base_scores)
+    reranked_order = np.argsort(-fused_scores)
+
+    reranked_indices = candidate_indices[:limit][reranked_order]
+    reranked_scores = fused_scores[reranked_order].tolist()
+
+    if limit < len(candidate_indices):
+        reranked_indices = np.concatenate([reranked_indices, candidate_indices[limit:]])
+        reranked_scores.extend(candidate_scores[limit:])
+
+    return reranked_indices, reranked_scores
+
 if query:
     try:
         sbert_full = fullscore_sbert(query) if (sbert_embeddings is not None) else None
@@ -409,8 +462,9 @@ if query:
         score_label = "Relevance (TF-IDF %)"
 
     chosen_indices = filtered_idx[order_local] if len(filtered_idx) > 0 else np.array([], dtype=int)
-    results_df = df.loc[chosen_indices].copy()
     scores = sc_local.tolist()
+    chosen_indices, scores = rerank_candidates(query, chosen_indices, scores)
+    results_df = df.loc[chosen_indices].copy()
 
     results_df["_score"] = scores
 
@@ -640,10 +694,13 @@ else:
 with st.expander("⚙️ Diagnostics"):
     st.write({
         "embedder_kind": embedder_kind,
+        "embed_model_name": EMBED_MODEL_NAME,
         "sbert_available": sbert_embeddings is not None,
+        "reranker_model_name": RERANKER_MODEL_NAME,
+        "reranker_available": reranker_model is not None,
+        "rerank_topn": RERANK_TOPN,
         "records": len(df),
         "hybrid_enabled": use_hybrid if 'use_hybrid' in locals() else None,
         "hybrid_weight": hybrid_w if 'hybrid_w' in locals() else None,
         "notes_count": len(st.session_state.get('notes', {})),
     })
-
