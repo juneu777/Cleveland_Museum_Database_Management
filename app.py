@@ -378,7 +378,6 @@ def apply_query_term_boost(results_df, scores, query):
     return tmp, new_scores
 
 st.title("Semantic Search Engine for the Cleveland Museum of Art Collection")
-st.write("Hybrid semantic + keyword retrieval, curator notes, CSV export, and basic analytics with graceful fallbacks.")
 
 results_df = filtered_df.copy()
 scores = None
@@ -586,17 +585,26 @@ title_options = results_df["title"].tolist() if not results_df.empty else df["ti
 selected_title = st.selectbox("Select artwork by title", title_options, key="note_title_select")
 
 existing = st.session_state["notes"].get(selected_title, "")
+if st.session_state.get("note_text_selected_title") != selected_title:
+    st.session_state["note_text_area"] = existing
+    st.session_state["note_text_selected_title"] = selected_title
+
 note_text = st.text_area("Notes", value=existing, key="note_text_area", placeholder="Ex: Consider for Spring exhibition on maritime themes.")
+
+def save_current_note():
+    st.session_state["notes"][selected_title] = st.session_state.get("note_text_area", "")
+
+def clear_current_note():
+    st.session_state["notes"].pop(selected_title, None)
+    st.session_state["note_text_area"] = ""
 
 cols_btn = st.columns([1,1,2,2])
 with cols_btn[0]:
-    if st.button("Save note", key="save_note_btn"):
-        st.session_state["notes"][selected_title] = note_text
+    if st.button("Save note", key="save_note_btn", on_click=save_current_note):
         st.success(f"Saved note for “{selected_title}”.")
 
 with cols_btn[1]:
-    if st.button("Clear note", key="clear_note_btn"):
-        st.session_state["notes"].pop(selected_title, None)
+    if st.button("Clear note", key="clear_note_btn", on_click=clear_current_note):
         st.info(f"Cleared note for “{selected_title}”.")
 
 def _slugify(s):
@@ -604,7 +612,7 @@ def _slugify(s):
 
 single_txt = ""
 if selected_title in st.session_state["notes"]:
-    single_txt = f"Title: {selected_title}\n\nNote:\n{st.session_state['notes'][selected_title]}\n"
+    single_txt = f"Title: {selected_title}\nNote: {st.session_state['notes'][selected_title]}\n"
 st.download_button(
     "Download this note (.txt)",
     data=single_txt.encode("utf-8"),
@@ -617,7 +625,7 @@ st.download_button(
 if st.session_state["notes"]:
     all_txt_parts = []
     for t, n in st.session_state["notes"].items():
-        all_txt_parts.append(f"Title: {t}\nNote:\n{n}\n" + "-"*40 + "\n")
+        all_txt_parts.append(f"Title: {t}\nNote: {n}\n" + "-"*40 + "\n")
     all_txt = "".join(all_txt_parts)
 else:
     all_txt = "No notes yet.\n"
