@@ -30,9 +30,17 @@ This gives the app a stronger ranking setup than a single keyword index while st
 
 ## Project Structure
 
-- [app.py](/Users/eujinjeon/Cleveland_Museum_Database_Management/app.py) contains the Streamlit interface, data preparation, retrieval logic, reranking, filters, exports, and diagnostics
-- [requirements.txt](/Users/eujinjeon/Cleveland_Museum_Database_Management/requirements.txt) contains the Python dependencies
+- `app.py` contains the Streamlit interface, data preparation, retrieval logic, reranking, filters, exports, and diagnostics
+- `requirements.txt` contains the Python dependencies
 - `data/data.csv` is the default collection dataset loaded by the app unless overridden with an environment variable
+
+## Data Source
+
+This project uses open-access collection data from the Cleveland Museum of Art.
+
+- Data source: Cleveland Museum of Art Open Access Collection
+- GitHub repository: ClevelandMuseumArt/openaccess
+- Local dataset path: `data/data.csv`
 
 ## Requirements
 
@@ -167,7 +175,7 @@ If search quality seems weak:
 If the dataset does not load:
 
 - Confirm that the CSV exists at the path set by `CMA_DATA_PATH`
-- Confirm the file has the expected collection columns used in [app.py](/Users/eujinjeon/Cleveland_Museum_Database_Management/app.py)
+- Confirm the file has the expected collection columns used in `app.py`
 
 ## Future Improvements
 
